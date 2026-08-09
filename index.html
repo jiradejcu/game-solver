@@ -27,6 +27,18 @@
     </div>
 
     <div class="camera-controls">
+      <button id="snapshotBtn" class="secondary">Capture snapshot</button>
+      <span id="snapshotStatus" class="calibrate-hint"></span>
+    </div>
+
+    <div class="camera-controls">
+      <button id="calibrateBlueBtn" class="secondary">Calibrate blue frame</button>
+      <button id="calibrateRedBtn" class="secondary">Calibrate red piece</button>
+      <button id="calibrateGreenBtn" class="secondary">Calibrate green piece</button>
+    </div>
+    <p id="calibrateColorStatus" class="calibrate-hint">Click a button above, then click that color in the camera view — its exact color is memorized instead of guessing thresholds.</p>
+
+    <div class="camera-controls">
       <button id="calibrateEmptyBtn" class="secondary">Calibrate empty board</button>
     </div>
     <p id="calibrateStatus" class="calibrate-hint">Empty the board, then click Calibrate so lighting/color-cast doesn't get misread as a piece.</p>
@@ -36,7 +48,7 @@
       <span id="turnStatus" class="badge">Turn: —</span>
     </div>
 
-    <details class="debug-panel">
+    <details class="debug-panel" open>
       <summary>Calibration &amp; debug</summary>
       <div class="debug-grid">
         <label>Blue hue min <input type="range" id="s_blueHueMin" min="0" max="179" /></label>
@@ -55,10 +67,14 @@
       <div class="debug-toggles">
         <label class="chk"><input type="checkbox" id="flipHChk" /> Flip horizontal</label>
         <label class="chk"><input type="checkbox" id="flipVChk" /> Flip vertical</label>
-        <label class="chk"><input type="checkbox" id="showDebugChk" /> Show mask / warped preview</label>
+        <label class="chk"><input type="checkbox" id="showDebugChk" checked /> Show mask / warped preview</label>
+        <label class="chk"><input type="checkbox" id="showGridOverlayChk" checked /> Show grid overlay on camera</label>
+        <label class="chk"><input type="checkbox" id="showHoughDebugChk" checked /> Show raw Hough candidates (yellow/cyan lines, magenta circles)</label>
       </div>
-      <div id="debugPreviews" class="debug-previews hidden">
+      <div id="debugPreviews" class="debug-previews">
         <div><p>Blue mask</p><canvas id="maskCanvas"></canvas></div>
+        <div><p>Red mask</p><canvas id="redMaskCanvas"></canvas></div>
+        <div><p>Green mask</p><canvas id="greenMaskCanvas"></canvas></div>
         <div><p>Warped board</p><canvas id="warpedCanvas"></canvas><p class="calibrate-hint">Click a cell above to inspect its H/S/V.</p></div>
       </div>
       <p id="hsvReadout" class="calibrate-hint"></p>
@@ -95,6 +111,7 @@
 <canvas id="captureCanvas" class="hidden"></canvas>
 
 <script src="js/devlog.js"></script>
+<script src="js/livereload.js"></script>
 <script>
   // Surface any uncaught error directly on the page so problems are visible
   // without opening devtools (this line runs before anything else, so it
