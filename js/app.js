@@ -82,6 +82,13 @@ const dom = {
 let committedBoard = makeEmptyBoard();
 let stabilityBuffer = makeEmptyBuffer(); // per-cell {value, count} in image space (row 0 = top)
 let lastSolvedSignature = null;
+// Color (1=Red, 2=Green) of whichever piece was seen first this game -- Red doesn't
+// always move first in practice, so this is derived from the board rather than assumed.
+// Reset to null (and re-derived from whatever's currently on the board) whenever a
+// filled slot reverts to empty, since that means either a genuine board wipe (new game)
+// or an earlier misread being corrected -- either way the old "who started" guess can
+// no longer be trusted.
+let firstMover = null;
 let requestCounter = 0;
 
 function makeEmptyBoard() {
@@ -552,6 +559,7 @@ function ingestGrid(grid) {
         if (current !== 0 && buf.count >= UNCOMMIT_STABILITY_FRAMES) {
           committedBoard[boardRow][c] = 0;
           changed = true;
+          firstMover = null; // board wiped or an earlier misread corrected -- re-derive who started
         }
         continue;
       }
@@ -577,18 +585,21 @@ function ingestGrid(grid) {
 
 // ---- Turn tracking ----------------------------------------------------
 function getCurrentTurn() {
-  // Derive from the actual red/green counts on the board, not just total-piece
-  // parity -- Red always moves first, so under legal alternating play redCount
-  // is always either equal to greenCount (Red's turn) or one ahead (Green's
-  // turn). Using total-piece parity instead would assume that alternation
-  // holds and blindly label whichever count came in, so a single stray/
-  // misdetected piece of the "wrong" color (e.g. one Green piece committed
-  // before any Red) reads as Green having just moved rather than Red being
-  // behind -- comparing the real counts self-corrects that.
   const flat = committedBoard.flat();
   const redCount = flat.filter((v) => v === 1).length;
   const greenCount = flat.filter((v) => v === 2).length;
-  return redCount <= greenCount ? 1 : 2;
+
+  if (firstMover === null) {
+    // Nothing to go on yet -- default to Red until a piece reveals who actually
+    // started; once one exists, whichever color is ahead (or tied, meaning it's
+    // the other one's turn) is the one that opened this game.
+    if (redCount === 0 && greenCount === 0) return 1;
+    firstMover = redCount >= greenCount ? 1 : 2;
+  }
+
+  const other = firstMover === 1 ? 2 : 1;
+  const totalMoves = redCount + greenCount;
+  return totalMoves % 2 === 0 ? firstMover : other;
 }
 
 function updateTurnStatus() {
@@ -635,6 +646,7 @@ function resetBoardState() {
   committedBoard = makeEmptyBoard();
   stabilityBuffer = makeEmptyBuffer();
   lastSolvedSignature = null;
+  firstMover = null;
   dom.suggestionText.textContent = "Point the camera at the board to begin.";
   dom.evalBar.style.left = "50%";
   clearHighlight();
@@ -666,7 +678,9 @@ function onCellClick(col, row) {
 
   if (row === topFilledRow && topFilledRow >= 0) {
     const cur = committedBoard[row][col];
-    committedBoard[row][col] = cur === 1 ? 2 : cur === 2 ? 0 : 1;
+    const next = cur === 1 ? 2 : cur === 2 ? 0 : 1;
+    if (next === 0) firstMover = null; // cycled a piece back to empty -- re-derive who started
+    committedBoard[row][col] = next;
   } else if (row === openRow) {
     committedBoard[row][col] = getCurrentTurn();
   } else {
