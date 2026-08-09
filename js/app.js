@@ -101,6 +101,18 @@ let cvReady = false;
 
 function wireOpenCv() {
   if (typeof cv === "undefined") return false;
+  // cv.Mat only exists once the WASM runtime has actually finished
+  // initializing -- if that already happened before this line runs (more
+  // likely with a warm browser cache, e.g. after a livereload-triggered
+  // reload), onRuntimeInitialized already fired and attaching it now would
+  // miss the event forever, leaving cvReady stuck false ("vision engine
+  // still loading..." that never resolves). Check for the already-ready
+  // case directly instead of only ever listening for the event.
+  if (cv.Mat) {
+    cvReady = true;
+    dom.cvStatus.textContent = "Vision engine ready.";
+    return true;
+  }
   cv["onRuntimeInitialized"] = () => {
     cvReady = true;
     dom.cvStatus.textContent = "Vision engine ready.";
@@ -367,7 +379,7 @@ function detectTick() {
   ctx.drawImage(dom.video, 0, 0, dom.captureCanvas.width, dom.captureCanvas.height);
 
   const showDebug = dom.showDebugChk.checked;
-  const houghDebug = { collectRaw: dom.showHoughDebugChk.checked };
+  const houghDebug = {};
   const src = cv.imread(dom.captureCanvas);
   let result;
   try {
@@ -403,10 +415,11 @@ function logDetection(result, houghDebug) {
     lastFoundLogged = result.found;
     console.log(`[vision] board ${result.found ? "found" : "lost"}`);
   }
-  if (result.found && houghDebug) {
+  if (houghDebug && houghDebug.cornerMethod) {
     console.log(
-      `[corners] method=${houghDebug.cornerMethod} period=${houghDebug.period} ` +
-      `bboxTop=${houghDebug.bboxTop} bboxBottom=${houghDebug.bboxBottom} ` +
+      `[corners] found=${result.found} method=${houghDebug.cornerMethod} ` +
+      `topY=${houghDebug.topY} leftX=${houghDebug.leftX} rightX=${houghDebug.rightX} bottomY=${houghDebug.bottomY} ` +
+      `period=${houghDebug.period} bboxTop=${houghDebug.bboxTop} bboxBottom=${houghDebug.bboxBottom} ` +
       `rowCounts=${JSON.stringify(houghDebug.rowCounts)} allRowCenters=${JSON.stringify(houghDebug.allRowCenters)}`
     );
   }
@@ -451,53 +464,17 @@ function drawOverlay(result, houghDebug) {
   drawGridClassification(ctx, result);
 }
 
-// Draws every raw Hough line/circle candidate this frame produced -- purely
-// for visual calibration checking (do detected shapes land where the real
-// frame/holes actually are?). No picking or fitting happens on this data
-// anymore; see collectHoughDebug in vision.js.
-function segLength(s) {
-  return Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
-}
-
-function strokeSeg(ctx, s) {
-  ctx.beginPath();
-  ctx.moveTo(s.x1, s.y1);
-  ctx.lineTo(s.x2, s.y2);
-  ctx.stroke();
-}
-
+// Draws every raw detected hole-circle -- purely for visual calibration
+// checking (do they land where the real holes actually are?). No picking or
+// fitting happens on this data; see detectHoleCircles in vision.js. Corner
+// detection itself no longer uses Hough lines at all (top/left/right come
+// from a direct mask-edge scan instead -- see findTopEdgeY etc.), so there's
+// nothing line-shaped left to draw here.
 function drawHoughDebug(ctx, hd) {
-  if (!hd) return;
-
-  const horizontals = hd.horizontals || [];
-  const verticals = hd.verticals || [];
-
-  // The longest candidate in each direction, purely as a visual reference --
-  // lines no longer feed into actual corner-fitting (circles do, see
-  // vision.js's cornersFromCircleGrid), so this isn't "the selected" line in
-  // any functional sense, just the most visually prominent one.
-  const longestH = horizontals.reduce((a, b) => (!a || segLength(b) > segLength(a) ? b : a), null);
-  const longestV = verticals.reduce((a, b) => (!a || segLength(b) > segLength(a) ? b : a), null);
+  if (!hd || !dom.showHoughDebugChk.checked) return;
 
   ctx.lineWidth = 1;
-  ctx.strokeStyle = "rgba(255, 235, 59, 0.7)"; // all raw horizontal line candidates
-  horizontals.forEach((s) => { if (s !== longestH) strokeSeg(ctx, s); });
-
-  ctx.strokeStyle = "rgba(0, 229, 255, 0.7)"; // all raw vertical line candidates
-  verticals.forEach((s) => { if (s !== longestV) strokeSeg(ctx, s); });
-
-  ctx.lineWidth = 4;
-  if (longestH) {
-    ctx.strokeStyle = "#ffeb3b";
-    strokeSeg(ctx, longestH);
-  }
-  if (longestV) {
-    ctx.strokeStyle = "#00e5ff";
-    strokeSeg(ctx, longestV);
-  }
-
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = "rgba(255, 0, 229, 0.8)"; // every raw Hough circle (hole candidate)
+  ctx.strokeStyle = "rgba(255, 0, 229, 0.8)";
   (hd.circles || []).forEach((c) => {
     ctx.beginPath();
     ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
@@ -789,8 +766,8 @@ dom.warpedCanvas.addEventListener("click", (e) => {
   const scaleY = dom.warpedCanvas.height / rect.height;
   const px = (e.clientX - rect.left) * scaleX;
   const py = (e.clientY - rect.top) * scaleY;
-  const c = Math.min(BOARD_COLS - 1, Math.max(0, Math.floor(px / Vision.CELL_PX)));
-  const rImg = Math.min(BOARD_ROWS - 1, Math.max(0, Math.floor(py / Vision.CELL_PX)));
+  const c = Math.min(BOARD_COLS - 1, Math.max(0, Math.floor(px / Vision.CELL_W)));
+  const rImg = Math.min(BOARD_ROWS - 1, Math.max(0, Math.floor(py / Vision.CELL_H)));
   const info = Vision.debugCell(rImg, c);
   const text = info
     ? `Row ${rImg + 1} (from top), Col ${c + 1} — H:${info.h.toFixed(0)} S:${info.s.toFixed(0)} V:${info.v.toFixed(0)} → classified as ${info.classification}`

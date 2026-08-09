@@ -1,20 +1,24 @@
 // Computer-vision board reader built on OpenCV.js.
 //
 // Pipeline per frame:
-//   1. Threshold the frame for the board's blue frame color -> mask.
-//   2. Find the largest contour in that mask and take its minAreaRect for
-//      the top edge, left/right width, and rotation. The bottom edge is NOT
-//      trusted from the blob directly -- the board's base is the same blue
-//      plastic and merges into the same contour, with no holes in it, so
-//      the blob's actual bottom edge includes the base. Instead it's
-//      measured directly: scan the mask row by row and find where the
-//      periodic "hole, gap, hole, gap..." pattern stops (see
-//      findGridBottomByHoles / cornersFromMaskHoles). Falls back to the
-//      blob's own bottom edge if no clear hole pattern is found.
-//      collectHoughDebug separately exposes the *raw* Hough line/circle
-//      output (see Vision.processFrame's debugHough option) purely for
-//      visual calibration checking, with no attempt to pick or fit anything
-//      from it.
+//   1. Threshold the frame for the board's blue frame color -> mask, and
+//      find the largest contour in it (the frame + its base, which merge
+//      into one shape since they're the same color and touch).
+//   2. Find the grid's four corners:
+//      - Top/left/right: the single sharpest black<->white transition in
+//        the mask near each edge (findTopEdgeY/findLeftEdgeX/findRightEdgeX)
+//        -- a direct measurement of where the mask actually changes, not a
+//        fit through ambiguous candidates (an earlier version tried Hough
+//        line detection here and kept latching onto false lines -- a
+//        diagonal line formed by repeated holes' edges, background clutter
+//        picked up by an over-generous search margin, etc.).
+//      - Bottom: there's no sharp transition to find here -- the base is
+//        the same blue plastic as the frame with nothing marking where the
+//        grid ends and the base begins. Instead, detectHoleCircles finds
+//        the 42 holes directly via the Hough circle transform, and
+//        estimateBottomYFromCircles measures the row-to-row spacing from
+//        however many rows it can confidently see and extrapolates one
+//        more row past the last one.
 //   3. Perspective-warp the grid to a flat top-down 7x6 image.
 //   4. Sample the average HSV color at each of the 42 slot centers and
 //      classify it as empty / red / green.
@@ -25,9 +29,15 @@
 const Vision = (() => {
   const ROWS = 6;
   const COLS = 7;
-  const CELL_PX = 60; // size of one warped cell, in pixels
-  const WARP_W = COLS * CELL_PX;
-  const WARP_H = ROWS * CELL_PX;
+  // Size of one warped cell, in pixels. NOT equal on both axes -- the
+  // physical board's holes aren't spaced in perfect squares (a snapshot of
+  // the warped-board debug preview showed circular holes rendering as
+  // visibly tall ovals when this was a single square CELL_PX, i.e. the row
+  // spacing is tighter than the column spacing).
+  const CELL_W = 60;
+  const CELL_H = 48;
+  const WARP_W = COLS * CELL_W;
+  const WARP_H = ROWS * CELL_H;
 
   const settings = {
     blueHueMin: 90,
@@ -99,17 +109,6 @@ const Vision = (() => {
     return { h, s, v, classification: classifyCell(h, s, v, r, c) };
   }
 
-  function orderCorners(pts) {
-    // pts: [{x,y} x4] -> returns [TL, TR, BR, BL]
-    const bySum = [...pts].sort((a, b) => a.x + a.y - (b.x + b.y));
-    const tl = bySum[0];
-    const br = bySum[3];
-    const byDiff = [...pts].sort((a, b) => a.x - a.y - (b.x - b.y));
-    const bl = byDiff[0];
-    const tr = byDiff[3];
-    return [tl, tr, br, bl];
-  }
-
   // Shrinks a [TL,TR,BR,BL] quad toward its own centroid by `frac` (e.g.
   // 0.04 = each corner moves 4% of the way toward the center), to trim the
   // frame's own plastic border off the warp instead of stretching it into
@@ -123,33 +122,13 @@ const Vision = (() => {
     }));
   }
 
-  function rotatedRectCorners(rect) {
-    const { center, size, angle } = rect;
-    const rad = (angle * Math.PI) / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const hw = size.width / 2;
-    const hh = size.height / 2;
-    const local = [
-      { x: -hw, y: -hh },
-      { x: hw, y: -hh },
-      { x: hw, y: hh },
-      { x: -hw, y: hh },
-    ];
-    return local.map((p) => ({
-      x: center.x + p.x * cos - p.y * sin,
-      y: center.y + p.x * sin + p.y * cos,
-    }));
-  }
-
-  // Detects hole-like circles via the Hough circle transform. Unlike the
-  // line detection below, this isn't just for visualization -- a snapshot
-  // (see js/app.js's captureSnapshot) confirmed these land precisely on
-  // real holes even where a raw per-pixel mask-row scan gets fooled by the
-  // base's own texture/notches, so findGridBottomByCircles uses this
-  // directly to measure the grid's actual extent. `bbox` (the detected blue
-  // contour's bounding box) only scales the search parameters; pass null to
-  // search the whole frame with generous defaults.
+  // Detects hole-like circles via the Hough circle transform -- used by
+  // estimateBottomYFromCircles to measure the grid's bottom edge, since a
+  // snapshot (see js/app.js's captureSnapshot) confirmed these land
+  // precisely on real holes even where the base's own texture/notches would
+  // fool a simpler per-pixel approach. `bbox` (the detected blue contour's
+  // bounding box) only scales the search parameters; pass null to search
+  // the whole frame with generous defaults.
   function detectHoleCircles(cv, srcMat, bbox) {
     const gray = new cv.Mat();
     cv.cvtColor(srcMat, gray, cv.COLOR_RGBA2GRAY);
@@ -173,50 +152,112 @@ const Vision = (() => {
     return result;
   }
 
-  // Runs Hough line detection and records every raw candidate into `debug`,
-  // with no picking or fitting -- purely for visual inspection (see
-  // Vision.processFrame's debugHough option), e.g. to check that the
-  // calibrated blue/red/green ranges actually land on the right shapes.
-  // `bbox` only scales the search parameters; pass null to search the whole
-  // frame with generous defaults.
-  function collectHoughLineDebug(cv, mask, bbox, debug) {
-    const margin = bbox ? Math.round(Math.max(bbox.width, bbox.height) * 0.1) : 0;
-    const rx = bbox ? Math.max(0, bbox.x - margin) : 0;
-    const ry = bbox ? Math.max(0, bbox.y - margin) : 0;
-    const rw = bbox ? Math.min(mask.cols - rx, bbox.width + margin * 2) : mask.cols;
-    const rh = bbox ? Math.min(mask.rows - ry, bbox.height + margin * 2) : mask.rows;
-    const roi = mask.roi(new cv.Rect(rx, ry, rw, rh));
-
-    const edges = new cv.Mat();
-    cv.Canny(roi, edges, 50, 150);
-    // Loose on purpose: this is a raw visualization, not a fit, so showing
-    // extra false candidates is far cheaper than showing none. A tighter
-    // minLen (scaled off bbox) was finding zero lines on tilted/occluded
-    // frames even though the mask clearly had a real edge, because no single
-    // unbroken segment reached the threshold.
-    const minLen = bbox ? Math.max(15, Math.min(bbox.width, bbox.height) * 0.15) : 15;
-    const lines = new cv.Mat();
-    cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 25, minLen, 25);
-
-    const horizontals = [];
-    const verticals = [];
-    for (let i = 0; i < lines.rows; i++) {
-      const x1 = lines.data32S[i * 4] + rx;
-      const y1 = lines.data32S[i * 4 + 1] + ry;
-      const x2 = lines.data32S[i * 4 + 2] + rx;
-      const y2 = lines.data32S[i * 4 + 3] + ry;
-      let angle = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
-      angle = ((angle % 180) + 180) % 180; // normalize to [0,180)
-      const seg = { x1, y1, x2, y2 };
-      if (angle <= 20 || angle >= 160) horizontals.push(seg);
-      else if (angle >= 70 && angle <= 110) verticals.push(seg);
+  // Fraction of mask pixels that are white (blue) in each row y in [y0,y1),
+  // sampled across columns [x0,x1). One number per row -- a 1D brightness
+  // profile you can scan for where it transitions from mostly-black to
+  // mostly-white (or back).
+  function maskRowProfile(mask, x0, x1, y0, y1) {
+    const data = mask.data;
+    const cols = mask.cols;
+    const w = x1 - x0;
+    const profile = [];
+    for (let y = y0; y < y1; y++) {
+      let count = 0;
+      const rowOffset = y * cols;
+      for (let x = x0; x < x1; x++) {
+        if (data[rowOffset + x] > 127) count++;
+      }
+      profile.push(count / w);
     }
-    edges.delete();
-    lines.delete();
-    roi.delete();
+    return profile;
+  }
 
-    debug.horizontals = horizontals;
-    debug.verticals = verticals;
+  // Same as maskRowProfile but per-column instead of per-row.
+  function maskColProfile(mask, y0, y1, x0, x1) {
+    const data = mask.data;
+    const cols = mask.cols;
+    const h = y1 - y0;
+    const profile = [];
+    for (let x = x0; x < x1; x++) {
+      let count = 0;
+      for (let y = y0; y < y1; y++) {
+        if (data[y * cols + x] > 127) count++;
+      }
+      profile.push(count / h);
+    }
+    return profile;
+  }
+
+  const MIN_EDGE_CONTRAST = 0.3;
+
+  // Index of the steepest black->white rise in `profile` (comparing samples
+  // `r` apart, to smooth single-pixel noise). Returns null if nothing rises
+  // by at least MIN_EDGE_CONTRAST -- i.e. no real edge in this profile.
+  function steepestRise(profile, r) {
+    let bestIdx = -1;
+    let bestRise = MIN_EDGE_CONTRAST;
+    for (let i = r; i < profile.length - r; i++) {
+      const rise = profile[i + r] - profile[i - r];
+      if (rise > bestRise) {
+        bestRise = rise;
+        bestIdx = i;
+      }
+    }
+    return bestIdx === -1 ? null : bestIdx;
+  }
+
+  // Same as steepestRise but for the steepest white->black fall.
+  function steepestFall(profile, r) {
+    let bestIdx = -1;
+    let bestFall = MIN_EDGE_CONTRAST;
+    for (let i = r; i < profile.length - r; i++) {
+      const fall = profile[i - r] - profile[i + r];
+      if (fall > bestFall) {
+        bestFall = fall;
+        bestIdx = i;
+      }
+    }
+    return bestIdx === -1 ? null : bestIdx;
+  }
+
+  // Finds the board's top/left/right edges as the single sharpest
+  // black<->white transition in the mask near each one -- not a Hough line
+  // fit through ambiguous candidates, just: where does the mask actually,
+  // directly change from background to frame? (Bottom isn't found this way
+  // -- the base is the same blue plastic with no sharp transition where it
+  // meets the grid, so there's nothing for this to find there; see
+  // estimateBottomYFromCircles.) Each function samples a window near the
+  // expected edge (using `bbox`, the blue contour's bounding box, as a
+  // rough starting reference) and returns the transition's coordinate in
+  // full-mask space, or null if no clear transition was found there.
+  function findTopEdgeY(mask, bbox) {
+    const x0 = Math.round(bbox.x + bbox.width * 0.2);
+    const x1 = Math.round(bbox.x + bbox.width * 0.8);
+    const y0 = Math.max(0, Math.round(bbox.y - bbox.height * 0.15));
+    const y1 = Math.min(mask.rows, Math.round(bbox.y + bbox.height * 0.4));
+    if (x1 <= x0 || y1 <= y0) return null;
+    const idx = steepestRise(maskRowProfile(mask, x0, x1, y0, y1), 2);
+    return idx === null ? null : y0 + idx;
+  }
+
+  function findLeftEdgeX(mask, bbox) {
+    const y0 = Math.round(bbox.y + bbox.height * 0.2);
+    const y1 = Math.round(bbox.y + bbox.height * 0.8);
+    const x0 = Math.max(0, Math.round(bbox.x - bbox.width * 0.15));
+    const x1 = Math.min(mask.cols, Math.round(bbox.x + bbox.width * 0.4));
+    if (x1 <= x0 || y1 <= y0) return null;
+    const idx = steepestRise(maskColProfile(mask, y0, y1, x0, x1), 2);
+    return idx === null ? null : x0 + idx;
+  }
+
+  function findRightEdgeX(mask, bbox) {
+    const y0 = Math.round(bbox.y + bbox.height * 0.2);
+    const y1 = Math.round(bbox.y + bbox.height * 0.8);
+    const x0 = Math.max(0, Math.round(bbox.x + bbox.width * 0.6));
+    const x1 = Math.min(mask.cols, Math.round(bbox.x + bbox.width * 1.15));
+    if (x1 <= x0 || y1 <= y0) return null;
+    const idx = steepestFall(maskColProfile(mask, y0, y1, x0, x1), 2);
+    return idx === null ? null : x0 + idx;
   }
 
   // Binary mask (CV_8U, same size as `hsv`) of pixels whose hue falls in
@@ -291,14 +332,13 @@ const Vision = (() => {
     return indices;
   }
 
-  // Computes [TL,TR,BR,BL] directly from detected hole-circles (see
-  // detectHoleCircles), instead of from `rect` (minAreaRect of the whole
-  // blue blob, grid+base) -- earlier versions of this only re-measured the
-  // BOTTOM edge from circles while still projecting BL/BR's x-position from
-  // rect's rotation, which the base (wider than the grid, and not
-  // necessarily symmetric -- e.g. a notch on only one side) can skew,
-  // producing believable-looking but wrong left/right edges. This measures
-  // all four edges from the same source instead of mixing two.
+  // Estimates the y-coordinate of the grid's bottom edge from detected
+  // hole-circles (see detectHoleCircles). Top/left/right are found directly
+  // as a sharp mask transition (see findTopEdgeY etc.), but the bottom has
+  // no such transition to find -- the base is the same blue plastic as the
+  // frame with nothing sharp where it meets the grid -- so this instead
+  // measures the row-to-row spacing from however many hole-rows it can
+  // confidently see and extrapolates one more row's worth past the last one.
   //
   // Clusters circles into rows across the WHOLE bbox, but only ever trusts
   // the first ROWS clusters from the top -- that's a hard, known fact about
@@ -309,18 +349,10 @@ const Vision = (() => {
   // amplifying error through extrapolation -- and wide -- picked up real
   // circles the base's texture produces and got unstable).
   //
-  // For each trusted row, fits how its y-center, leftmost-circle-x, and
-  // rightmost-circle-x each vary with row index (a line per quantity) --
-  // capturing whatever rotation/perspective tilt is really there instead of
-  // assuming the sides are vertical -- then evaluates those lines at
-  // row -0.5 (top edge) and row ROWS-0.5 (bottom edge), stepping out by
-  // half a cell past the leftmost/rightmost/top/bottom-most hole *centers*
-  // to reach the frame's actual inner edge.
-  //
   // Returns null if too few real rows were measured to be confident. If
   // `debug` is passed, records diagnostics for why this succeeded/failed
   // (see Vision.processFrame's debugHough option).
-  function cornersFromCircleGrid(circles, bbox, debug) {
+  function estimateBottomYFromCircles(circles, bbox, debug) {
     if (debug) {
       debug.bboxTop = bbox ? bbox.y : null;
       debug.bboxBottom = bbox ? bbox.y + bbox.height : null;
@@ -351,22 +383,11 @@ const Vision = (() => {
     if (debug) debug.allRowCenters = yCenters;
     if (!rowIndices) return null;
 
-    const leftVals = realRows.map((r) => Math.min(...r.map((c) => c.x)));
-    const rightVals = realRows.map((r) => Math.max(...r.map((c) => c.x)));
     const yFit = linearFit(yCenters, rowIndices);
-    const leftFit = linearFit(leftVals, rowIndices);
-    const rightFit = linearFit(rightVals, rowIndices);
-    if (!yFit || !leftFit || !rightFit || !(yFit.slope > 2)) return null;
+    if (!yFit || !(yFit.slope > 2)) return null;
     if (debug) debug.period = yFit.slope;
 
-    const cellHalf = cellPx * 0.5;
-    const topY = yFit.at(-0.5);
-    const bottomY = yFit.at(ROWS - 0.5);
-    const tl = { x: leftFit.at(-0.5) - cellHalf, y: topY };
-    const tr = { x: rightFit.at(-0.5) + cellHalf, y: topY };
-    const bl = { x: leftFit.at(ROWS - 0.5) - cellHalf, y: bottomY };
-    const br = { x: rightFit.at(ROWS - 0.5) + cellHalf, y: bottomY };
-    return [tl, tr, br, bl];
+    return yFit.at(ROWS - 0.5);
   }
 
   // Finds the board's blue frame in `srcMat` (RGBA cv.Mat).
@@ -406,25 +427,43 @@ const Vision = (() => {
     let bbox = null;
     if (bestIdx >= 0 && bestArea / frameArea >= settings.minAreaFraction) {
       const c = contours.get(bestIdx);
-      const rect = cv.minAreaRect(c);
       bbox = cv.boundingRect(c);
       c.delete();
-      const circles = detectHoleCircles(cv, srcMat, bbox);
-      const holeCorners = cornersFromCircleGrid(circles, bbox, debugHough);
-      const corners = insetQuad(holeCorners || orderCorners(rotatedRectCorners(rect)), settings.cornerInset);
-      if (debugHough) {
-        debugHough.cornerMethod = holeCorners ? "circles" : "rect-fallback";
-        debugHough.circles = circles;
-      }
-      result = { found: true, corners, mask };
-    }
 
-    // collectRaw (line detection) is opt-in (app.js only sets it when "Show
-    // raw Hough candidates" is checked) since it's purely for visualization
-    // and runs its own Canny/HoughLinesP pass -- real cost every frame.
-    // Circle detection above always runs regardless, since corner-fitting
-    // depends on it now, not just the debug view.
-    if (debugHough && debugHough.collectRaw) collectHoughLineDebug(cv, mask, bbox, debugHough);
+      // Top/left/right: the single sharpest black<->white transition in the
+      // mask near each edge (see findTopEdgeY etc.) -- a direct measurement,
+      // not a fit through ambiguous candidates. Bottom: extrapolated from
+      // detected hole-circles' row spacing (estimateBottomYFromCircles),
+      // since the base is the same blue plastic as the frame with no sharp
+      // transition where it meets the grid for a direct measurement to find.
+      const topY = findTopEdgeY(mask, bbox);
+      const leftX = findLeftEdgeX(mask, bbox);
+      const rightX = findRightEdgeX(mask, bbox);
+      const circles = detectHoleCircles(cv, srcMat, bbox);
+      const bottomY = estimateBottomYFromCircles(circles, bbox, debugHough);
+
+      if (debugHough) {
+        debugHough.topY = topY;
+        debugHough.leftX = leftX;
+        debugHough.rightX = rightX;
+        debugHough.bottomY = bottomY;
+        debugHough.circles = circles;
+        debugHough.cornerMethod =
+          topY != null && leftX != null && rightX != null && bottomY != null ? "mask-edges+circles-bottom" : "none";
+      }
+
+      if (topY != null && leftX != null && rightX != null && bottomY != null) {
+        const corners = [
+          { x: leftX, y: topY },
+          { x: rightX, y: topY },
+          { x: rightX, y: bottomY },
+          { x: leftX, y: bottomY },
+        ];
+        result = { found: true, corners: insetQuad(corners, settings.cornerInset), mask };
+      }
+      // No fallback to a cruder guess when a measurement is missing --
+      // "found: false" here is honest uncertainty, not a bug to paper over.
+    }
 
     contours.delete();
     hierarchy.delete();
@@ -497,18 +536,19 @@ const Vision = (() => {
 
     const grid = [];
     const colors = [];
-    const sampleHalf = Math.floor(CELL_PX * 0.28);
+    const sampleHalfW = Math.floor(CELL_W * 0.28);
+    const sampleHalfH = Math.floor(CELL_H * 0.28);
 
     for (let r = 0; r < ROWS; r++) {
       const gridRow = [];
       const colorRow = [];
       for (let c = 0; c < COLS; c++) {
-        const cx = Math.round(c * CELL_PX + CELL_PX / 2);
-        const cy = Math.round(r * CELL_PX + CELL_PX / 2);
-        const x0 = Math.max(0, cx - sampleHalf);
-        const y0 = Math.max(0, cy - sampleHalf);
-        const w = Math.min(WARP_W - x0, sampleHalf * 2);
-        const h = Math.min(WARP_H - y0, sampleHalf * 2);
+        const cx = Math.round(c * CELL_W + CELL_W / 2);
+        const cy = Math.round(r * CELL_H + CELL_H / 2);
+        const x0 = Math.max(0, cx - sampleHalfW);
+        const y0 = Math.max(0, cy - sampleHalfH);
+        const w = Math.min(WARP_W - x0, sampleHalfW * 2);
+        const h = Math.min(WARP_H - y0, sampleHalfH * 2);
         const rect = new cv.Rect(x0, y0, w, h);
         const roi = hsv.roi(rect);
         const mean = cv.mean(roi);
@@ -586,7 +626,7 @@ const Vision = (() => {
     const pts = [];
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
-        pts.push({ x: c * CELL_PX + CELL_PX / 2, y: r * CELL_PX + CELL_PX / 2 });
+        pts.push({ x: c * CELL_W + CELL_W / 2, y: r * CELL_H + CELL_H / 2 });
       }
     }
     return pts;
@@ -641,7 +681,8 @@ const Vision = (() => {
   return {
     ROWS,
     COLS,
-    CELL_PX,
+    CELL_W,
+    CELL_H,
     settings,
     findBoardCorners,
     warpBoard,
