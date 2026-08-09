@@ -595,9 +595,23 @@ function maybeSolve() {
   console.log(`[solve] recalculating — committed board changed (turn=${getCurrentTurn() === 1 ? "Red" : "Green"})`);
   updateTurnStatus();
 
+  // Stop suggesting moves once someone has already connected 4 -- otherwise
+  // the board can keep filling past the actual win with nobody told (see the
+  // 2026-08-09 game where play continued 3 moves past Red's diagonal because
+  // nothing ever announced it).
+  const redWon = Connect4Solver.checkWinAnywhere(committedBoard, 1);
+  const greenWon = Connect4Solver.checkWinAnywhere(committedBoard, 2);
+  if (redWon || greenWon) {
+    dom.suggestionText.textContent = redWon ? "Red wins!" : "Green wins!";
+    clearHighlight();
+    dom.evalBar.style.left = redWon ? "100%" : "0%";
+    return;
+  }
+
   const totalMoves = committedBoard.flat().filter((v) => v !== 0).length;
   if (totalMoves === 42) {
-    dom.suggestionText.textContent = "Board is full.";
+    dom.suggestionText.textContent = "Board is full — draw.";
+    clearHighlight();
     return;
   }
   dom.suggestionText.textContent = "Thinking…";
