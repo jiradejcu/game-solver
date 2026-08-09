@@ -412,7 +412,7 @@ function logDetection(result, houghDebug) {
     console.log(`[vision] board ${result.found ? "found" : "lost"}`);
   }
   if (houghDebug && houghDebug.cornerMethod) {
-    console.log(
+    console.debug(
       `[corners] found=${result.found} method=${houghDebug.cornerMethod} ` +
       `topY=${houghDebug.topY} leftX=${houghDebug.leftX} rightX=${houghDebug.rightX} bottomY=${houghDebug.bottomY} ` +
       `period=${houghDebug.period} bboxTop=${houghDebug.bboxTop} bboxBottom=${houghDebug.bboxBottom} ` +
@@ -541,7 +541,16 @@ function ingestGrid(grid) {
       const current = committedBoard[boardRow][c];
 
       if (reading === "empty") {
-        // Never un-commit a piece from a transient empty reading (occlusion, glare).
+        // Un-commits a previously-filled slot once "empty" has itself been
+        // stable for STABILITY_FRAMES -- that's the same bar every other
+        // reading has to clear, so a transient occlusion/glare blip (a
+        // single bad frame) can't cause this; only a genuinely persistent
+        // empty reading can, which means the piece was actually removed or
+        // the earlier read was wrong.
+        if (current !== 0) {
+          committedBoard[boardRow][c] = 0;
+          changed = true;
+        }
         continue;
       }
       const value = reading === "red" ? 1 : 2;
@@ -583,6 +592,7 @@ function maybeSolve() {
   const sig = boardSignature();
   if (sig === lastSolvedSignature) return;
   lastSolvedSignature = sig;
+  console.log(`[solve] recalculating — committed board changed (turn=${getCurrentTurn() === 1 ? "Red" : "Green"})`);
   updateTurnStatus();
 
   const totalMoves = committedBoard.flat().filter((v) => v !== 0).length;
@@ -857,9 +867,10 @@ dom.videoWrap.addEventListener("click", (e) => {
 dom.calibrateEmptyBtn.addEventListener("click", () => {
   const ok = Vision.calibrateEmpty();
   if (ok) {
-    // Calibrating implies the physical board is empty right now, so drop any
-    // previously committed pieces (which the sticky-commit logic in
-    // ingestGrid would otherwise never clear from a plain "empty" reading).
+    // Calibrating implies the physical board is empty right now -- drop any
+    // previously committed pieces immediately, rather than waiting for
+    // ingestGrid's own stable-empty un-commit to clear all 42 cells one by
+    // one over the next few frames.
     resetBoardState();
   }
   dom.calibrateStatus.textContent = ok
