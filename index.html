@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>4 in a Row Solver</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="app-header">
+  <h1>4 in a Row — Camera Solver</h1>
+  <p id="cvStatus" class="cv-status">Loading vision engine…</p>
+</header>
+
+<main class="layout">
+
+  <section class="camera-panel">
+    <div class="video-wrap">
+      <video id="video" playsinline autoplay muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
+
+    <div class="camera-controls">
+      <button id="startBtn" disabled>Start camera</button>
+      <select id="cameraSelect"></select>
+      <label class="chk"><input type="checkbox" id="pauseChk" /> Pause detection</label>
+    </div>
+
+    <div class="board-status">
+      <span id="detectStatus" class="badge badge-off">No board detected</span>
+      <span id="turnStatus" class="badge">Turn: —</span>
+    </div>
+
+    <details class="debug-panel">
+      <summary>Calibration &amp; debug</summary>
+      <div class="debug-grid">
+        <label>Blue hue min <input type="range" id="s_blueHueMin" min="0" max="179" /></label>
+        <label>Blue hue max <input type="range" id="s_blueHueMax" min="0" max="179" /></label>
+        <label>Blue sat min <input type="range" id="s_blueSatMin" min="0" max="255" /></label>
+        <label>Blue val min <input type="range" id="s_blueValMin" min="0" max="255" /></label>
+        <label>Red hue max (low end) <input type="range" id="s_redHueMax1" min="0" max="60" /></label>
+        <label>Red hue min (high end) <input type="range" id="s_redHueMin2" min="120" max="179" /></label>
+        <label>Red sat min <input type="range" id="s_redSatMin" min="0" max="255" /></label>
+        <label>Red val min <input type="range" id="s_redValMin" min="0" max="255" /></label>
+        <label>Green hue min <input type="range" id="s_greenHueMin" min="0" max="179" /></label>
+        <label>Green hue max <input type="range" id="s_greenHueMax" min="0" max="179" /></label>
+        <label>Green sat min <input type="range" id="s_greenSatMin" min="0" max="255" /></label>
+        <label>Green val min <input type="range" id="s_greenValMin" min="0" max="255" /></label>
+      </div>
+      <div class="debug-toggles">
+        <label class="chk"><input type="checkbox" id="flipHChk" /> Flip horizontal</label>
+        <label class="chk"><input type="checkbox" id="flipVChk" /> Flip vertical</label>
+        <label class="chk"><input type="checkbox" id="showDebugChk" /> Show mask / warped preview</label>
+      </div>
+      <div id="debugPreviews" class="debug-previews hidden">
+        <div><p>Blue mask</p><canvas id="maskCanvas"></canvas></div>
+        <div><p>Warped board</p><canvas id="warpedCanvas"></canvas></div>
+      </div>
+    </details>
+  </section>
+
+  <section class="board-panel">
+    <h2>Detected board</h2>
+    <p class="hint">Click any slot to correct it if the camera misreads it.</p>
+    <div id="arrowRow" class="arrow-row"></div>
+    <div id="boardGrid" class="board-grid"></div>
+
+    <div class="turn-controls">
+      <span>First move:</span>
+      <label><input type="radio" name="firstPlayer" value="1" checked /> Red</label>
+      <label><input type="radio" name="firstPlayer" value="2" /> Green</label>
+      <button id="swapTurnBtn" title="Override whose turn it is">Swap turn</button>
+    </div>
+
+    <div class="actions">
+      <button id="resetBtn">Reset board</button>
+      <button id="recomputeBtn">Recompute move</button>
+    </div>
+
+    <div class="suggestion" id="suggestion">
+      <h3>Suggested move</h3>
+      <p id="suggestionText">Point the camera at the board to begin.</p>
+      <div class="eval-bar-wrap"><div id="evalBar" class="eval-bar"></div></div>
+    </div>
+  </section>
+
+</main>
+
+<canvas id="captureCanvas" class="hidden"></canvas>
+
+<script src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script src="js/solver.js"></script>
+<script src="js/vision.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
