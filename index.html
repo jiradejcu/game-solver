@@ -21,7 +21,7 @@
     </div>
 
     <div class="camera-controls">
-      <button id="startBtn" disabled>Start camera</button>
+      <button id="startBtn">Start camera</button>
       <select id="cameraSelect"></select>
       <label class="chk"><input type="checkbox" id="pauseChk" /> Pause detection</label>
     </div>
@@ -88,7 +88,18 @@
 
 <canvas id="captureCanvas" class="hidden"></canvas>
 
-<script src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script>
+  // Surface any uncaught error directly on the page so problems are visible
+  // without opening devtools (this line runs before anything else, so it
+  // catches failures in every script that follows, including a failed
+  // OpenCV.js load).
+  window.addEventListener("error", (e) => {
+    const status = document.getElementById("cvStatus");
+    if (status) status.textContent = "Error: " + (e.message || e.error || "unknown script error");
+    console.error(e.error || e.message);
+  });
+</script>
+<script src="https://docs.opencv.org/4.x/opencv.js" onerror="document.getElementById('cvStatus').textContent='Failed to load the vision engine from docs.opencv.org (check your internet connection / firewall). Camera preview still works; automatic board detection will stay off.'"></script>
 <script src="js/solver.js"></script>
 <script src="js/vision.js"></script>
 <script src="js/app.js"></script>

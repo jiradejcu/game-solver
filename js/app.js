@@ -1,7 +1,7 @@
 // Glues camera -> vision.js -> game/board state -> solverWorker -> UI.
 
-const ROWS = Connect4Solver.ROWS;
-const COLS = Connect4Solver.COLS;
+const BOARD_ROWS = Connect4Solver.ROWS;
+const BOARD_COLS = Connect4Solver.COLS;
 const STABILITY_FRAMES = 3; // consecutive matching frames required before a slot is committed
 
 const el = (id) => document.getElementById(id);
@@ -41,19 +41,37 @@ let lastSolvedSignature = null;
 let requestCounter = 0;
 
 function makeEmptyBoard() {
-  return Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+  return Array.from({ length: BOARD_ROWS }, () => Array(BOARD_COLS).fill(0));
 }
 function makeEmptyBuffer() {
-  return Array.from({ length: ROWS }, () => Array.from({ length: COLS }, () => ({ value: "empty", count: 0 })));
+  return Array.from({ length: BOARD_ROWS }, () => Array.from({ length: BOARD_COLS }, () => ({ value: "empty", count: 0 })));
 }
 
 // ---- OpenCV lifecycle -------------------------------------------------
+// Camera capture doesn't depend on OpenCV at all, so the Start button is
+// always clickable; only the per-frame detection loop waits on cvReady.
+// `cv` is a global injected by the opencv.js <script> tag — if that script
+// failed to load (network/firewall issue) `cv` won't exist yet, so we guard
+// and retry instead of letting a bare reference crash this whole file (which
+// would silently break every button on the page, including Start Camera).
 let cvReady = false;
-cv["onRuntimeInitialized"] = () => {
-  cvReady = true;
-  dom.cvStatus.textContent = "Vision engine ready.";
-  dom.startBtn.disabled = false;
-};
+
+function wireOpenCv() {
+  if (typeof cv === "undefined") return false;
+  cv["onRuntimeInitialized"] = () => {
+    cvReady = true;
+    dom.cvStatus.textContent = "Vision engine ready.";
+  };
+  return true;
+}
+
+if (!wireOpenCv()) {
+  let cvWireAttempts = 0;
+  const cvWireRetry = setInterval(() => {
+    cvWireAttempts += 1;
+    if (wireOpenCv() || cvWireAttempts > 100) clearInterval(cvWireRetry); // give up after ~20s
+  }, 200);
+}
 
 // ---- Solver worker ------------------------------------------------------
 const worker = new Worker("js/solverWorker.js");
@@ -98,6 +116,11 @@ async function populateCameraList() {
 let currentStream = null;
 
 async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error(
+      "Camera API unavailable — this page must be served over https:// or http://localhost (not file://), and needs a modern browser."
+    );
+  }
   if (currentStream) {
     currentStream.getTracks().forEach((t) => t.stop());
   }
@@ -141,7 +164,11 @@ function startDetectionLoop() {
 }
 
 function detectTick() {
-  if (!cvReady || dom.pauseChk.checked) return;
+  if (!cvReady) {
+    dom.detectStatus.textContent = "Vision engine still loading…";
+    return;
+  }
+  if (dom.pauseChk.checked) return;
   if (!dom.video.videoWidth) return;
 
   if (dom.captureCanvas.width !== Math.min(480, dom.video.videoWidth)) {
@@ -197,9 +224,9 @@ function ingestGrid(grid) {
   // 1. Gravity cleanup per column: anything above the first empty slot
   //    (scanning from the physical bottom upward) is treated as noise.
   const cleaned = grid.map((row) => row.slice());
-  for (let c = 0; c < COLS; c++) {
+  for (let c = 0; c < BOARD_COLS; c++) {
     let seenEmpty = false;
-    for (let rImg = ROWS - 1; rImg >= 0; rImg--) {
+    for (let rImg = BOARD_ROWS - 1; rImg >= 0; rImg--) {
       if (seenEmpty) {
         cleaned[rImg][c] = "empty";
       } else if (cleaned[rImg][c] === "empty") {
@@ -210,8 +237,8 @@ function ingestGrid(grid) {
 
   // 2. Temporal stability: only accept a reading once it repeats.
   let changed = false;
-  for (let rImg = 0; rImg < ROWS; rImg++) {
-    for (let c = 0; c < COLS; c++) {
+  for (let rImg = 0; rImg < BOARD_ROWS; rImg++) {
+    for (let c = 0; c < BOARD_COLS; c++) {
       const reading = cleaned[rImg][c];
       const buf = stabilityBuffer[rImg][c];
       if (buf.value === reading) {
@@ -223,7 +250,7 @@ function ingestGrid(grid) {
 
       if (buf.count < STABILITY_FRAMES) continue;
 
-      const boardRow = ROWS - 1 - rImg; // convert image row (0=top) to board row (0=bottom)
+      const boardRow = BOARD_ROWS - 1 - rImg; // convert image row (0=top) to board row (0=bottom)
       const current = committedBoard[boardRow][c];
 
       if (reading === "empty") {
@@ -322,10 +349,10 @@ dom.resetBtn.addEventListener("click", () => {
 // ---- Board diagram rendering & manual correction -----------------------
 function renderBoard() {
   dom.boardGrid.innerHTML = "";
-  // Display top row first (visual row 0 = physical top = board row ROWS-1).
-  for (let displayRow = 0; displayRow < ROWS; displayRow++) {
-    const boardRow = ROWS - 1 - displayRow;
-    for (let c = 0; c < COLS; c++) {
+  // Display top row first (visual row 0 = physical top = board row BOARD_ROWS-1).
+  for (let displayRow = 0; displayRow < BOARD_ROWS; displayRow++) {
+    const boardRow = BOARD_ROWS - 1 - displayRow;
+    for (let c = 0; c < BOARD_COLS; c++) {
       const val = committedBoard[boardRow][c];
       const cellDiv = document.createElement("div");
       cellDiv.className = "cell" + (val === 1 ? " red" : val === 2 ? " green" : "");
@@ -339,7 +366,7 @@ function renderBoard() {
 
 function onCellClick(col, row) {
   const openRow = Connect4Solver.getOpenRow(committedBoard, col);
-  const topFilledRow = openRow === -1 ? ROWS - 1 : openRow - 1;
+  const topFilledRow = openRow === -1 ? BOARD_ROWS - 1 : openRow - 1;
 
   if (row === topFilledRow && topFilledRow >= 0) {
     const cur = committedBoard[row][col];
@@ -356,7 +383,7 @@ function onCellClick(col, row) {
 
 function renderArrows(bestCol) {
   dom.arrowRow.innerHTML = "";
-  for (let c = 0; c < COLS; c++) {
+  for (let c = 0; c < BOARD_COLS; c++) {
     const div = document.createElement("div");
     div.className = "arrow" + (c === bestCol ? " active" : "");
     div.textContent = "▼";
@@ -433,10 +460,26 @@ dom.showDebugChk.addEventListener("change", () => {
 });
 
 // ---- Wiring -------------------------------------------------------------
+const CAMERA_ERROR_HINTS = {
+  NotAllowedError: "Permission denied — allow camera access for this page (check the icon in the address bar), or Windows Settings > Privacy > Camera if it's blocked system-wide.",
+  NotFoundError: "No camera found — check that a webcam is connected and enabled in Device Manager.",
+  NotReadableError: "Camera is already in use by another app (Zoom, Teams, another browser tab, etc.) — close it and try again.",
+  OverconstrainedError: "No camera matches the requested settings — try a different camera from the dropdown.",
+  SecurityError: "Blocked by the browser's security policy — make sure you're on https:// or http://localhost.",
+  AbortError: "Camera start was interrupted — try again.",
+};
+
 dom.startBtn.addEventListener("click", () => {
-  startCamera().catch((e) => {
-    dom.cvStatus.textContent = "Camera error: " + e.message;
-  });
+  dom.cvStatus.textContent = "Requesting camera…";
+  startCamera()
+    .then(() => {
+      dom.cvStatus.textContent = cvReady ? "Vision engine ready." : "Camera running — vision engine still loading…";
+    })
+    .catch((e) => {
+      const hint = CAMERA_ERROR_HINTS[e.name];
+      dom.cvStatus.textContent = `Camera error (${e.name || "Error"}): ${e.message}` + (hint ? " — " + hint : "");
+      console.error(e);
+    });
 });
 
 navigator.mediaDevices?.addEventListener?.("devicechange", populateCameraList);
