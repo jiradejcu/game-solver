@@ -33,6 +33,11 @@ loadSavedColorSettings();
 const BOARD_ROWS = Connect4Solver.ROWS;
 const BOARD_COLS = Connect4Solver.COLS;
 const STABILITY_FRAMES = 3; // consecutive matching frames required before a slot is committed
+// Un-committing an already-filled slot flips whose turn it is, so it needs a much
+// stronger bar than filling one -- otherwise a few frames of corner-detection jitter
+// (grid sampling briefly shifting off a real piece) reads as "empty" long enough to
+// wrongly clear it and flip Red/Green for the rest of the game.
+const UNCOMMIT_STABILITY_FRAMES = 12;
 
 const el = (id) => document.getElementById(id);
 
@@ -529,30 +534,28 @@ function ingestGrid(grid) {
       const reading = cleaned[rImg][c];
       const buf = stabilityBuffer[rImg][c];
       if (buf.value === reading) {
-        buf.count = Math.min(buf.count + 1, STABILITY_FRAMES);
+        buf.count = Math.min(buf.count + 1, UNCOMMIT_STABILITY_FRAMES);
       } else {
         buf.value = reading;
         buf.count = 1;
       }
 
-      if (buf.count < STABILITY_FRAMES) continue;
-
       const boardRow = BOARD_ROWS - 1 - rImg; // convert image row (0=top) to board row (0=bottom)
       const current = committedBoard[boardRow][c];
 
       if (reading === "empty") {
-        // Un-commits a previously-filled slot once "empty" has itself been
-        // stable for STABILITY_FRAMES -- that's the same bar every other
-        // reading has to clear, so a transient occlusion/glare blip (a
-        // single bad frame) can't cause this; only a genuinely persistent
-        // empty reading can, which means the piece was actually removed or
-        // the earlier read was wrong.
-        if (current !== 0) {
+        // Un-commits a previously-filled slot once "empty" has been stable for
+        // UNCOMMIT_STABILITY_FRAMES -- a much higher bar than a fresh fill, since
+        // this flips whose turn it is; only a genuinely persistent empty reading
+        // (the piece was actually removed, or the earlier read was wrong) should
+        // clear it, not a brief grid-alignment jitter.
+        if (current !== 0 && buf.count >= UNCOMMIT_STABILITY_FRAMES) {
           committedBoard[boardRow][c] = 0;
           changed = true;
         }
         continue;
       }
+      if (buf.count < STABILITY_FRAMES) continue;
       const value = reading === "red" ? 1 : 2;
       if (current === 0) {
         committedBoard[boardRow][c] = value;
@@ -574,8 +577,18 @@ function ingestGrid(grid) {
 
 // ---- Turn tracking ----------------------------------------------------
 function getCurrentTurn() {
-  const totalMoves = committedBoard.flat().filter((v) => v !== 0).length;
-  return totalMoves % 2 === 0 ? 1 : 2; // Red always moves first
+  // Derive from the actual red/green counts on the board, not just total-piece
+  // parity -- Red always moves first, so under legal alternating play redCount
+  // is always either equal to greenCount (Red's turn) or one ahead (Green's
+  // turn). Using total-piece parity instead would assume that alternation
+  // holds and blindly label whichever count came in, so a single stray/
+  // misdetected piece of the "wrong" color (e.g. one Green piece committed
+  // before any Red) reads as Green having just moved rather than Red being
+  // behind -- comparing the real counts self-corrects that.
+  const flat = committedBoard.flat();
+  const redCount = flat.filter((v) => v === 1).length;
+  const greenCount = flat.filter((v) => v === 2).length;
+  return redCount <= greenCount ? 1 : 2;
 }
 
 function updateTurnStatus() {
