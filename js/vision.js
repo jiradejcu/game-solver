@@ -76,6 +76,10 @@ const Vision = (() => {
   // Per-cell {h,s,v} from the most recent sampleGrid call, used as the
   // source frame for calibrateEmpty.
   let lastColors = null;
+  // Per-cell {redFrac,greenFrac} from the most recent sampleGrid call (see
+  // classifyCell) -- used by debugCell so the HSV-inspector click UI shows
+  // the same classification sampleGrid actually used, not an approximation.
+  let lastFractions = null;
 
   function colorDelta(a, b) {
     const dh = Math.min(Math.abs(a.h - b.h), 180 - Math.abs(a.h - b.h));
@@ -106,7 +110,8 @@ const Vision = (() => {
   function debugCell(r, c) {
     if (!lastColors || !lastColors[r] || !lastColors[r][c]) return null;
     const { h, s, v } = lastColors[r][c];
-    return { h, s, v, classification: classifyCell(h, s, v, r, c) };
+    const { redFrac, greenFrac } = lastFractions[r][c];
+    return { h, s, v, redFrac, greenFrac, classification: classifyCell(h, s, v, r, c, redFrac, greenFrac) };
   }
 
   // Shrinks a [TL,TR,BR,BL] quad toward its own centroid by `frac` (e.g.
@@ -515,33 +520,63 @@ const Vision = (() => {
     return "empty";
   }
 
-  // Classifies one sampled cell, preferring the calibrated empty baseline
-  // (if any) over hue-range matching so a lighting color cast that pushes
+  // Minimum fraction of a cell's sample region that must match a color's
+  // per-pixel mask (computeRangeMask/computeRedMask) to classify it as that
+  // color. Cells are classified by per-pixel mask coverage, not by
+  // classifying the region's *mean* HSV (the old approach) -- averaging is
+  // unreliable because hue is meaningless noise for low-saturation pixels
+  // (shadows, glare off an empty hole's rim), and a region that's mostly
+  // gray with a few random-hued noisy pixels can average to a hue that
+  // passes a color's range even though literally no individual pixel in it
+  // does. Confirmed via a snapshot: a cell reading g(41,61,76) had a
+  // completely black (zero-coverage) green mask at that exact location.
+  const COLOR_COVERAGE_THRESHOLD = 0.35;
+
+  // Classifies one sampled cell. Prefers the calibrated empty baseline (if
+  // any) over color coverage, so a lighting color cast that pushes
   // white/cream holes into the red/green hue range doesn't misread them.
-  function classifyCell(h, s, v, r, c) {
+  // Otherwise picks whichever of red/green covers enough of the cell's
+  // pixels (see COLOR_COVERAGE_THRESHOLD), or empty if neither does.
+  function classifyCell(h, s, v, r, c, redFrac, greenFrac) {
     if (emptyReference) {
       const ref = emptyReference[r][c];
       if (colorDelta({ h, s, v }, ref) <= settings.emptyMaxDist) return "empty";
     }
-    return classifyHSV(h, s, v);
+    if (redFrac >= COLOR_COVERAGE_THRESHOLD && redFrac >= greenFrac) return "red";
+    if (greenFrac >= COLOR_COVERAGE_THRESHOLD) return "green";
+    return "empty";
   }
 
   // Samples the 42 slot centers of a warped board image.
   // Returns { grid, colors } where grid[row][col] (row 0 = top of image) is
-  // 'empty' | 'red' | 'green', and colors[row][col] is the averaged {h,s,v}.
+  // 'empty' | 'red' | 'green', and colors[row][col] is the averaged {h,s,v}
+  // (still reported for the HSV-inspector UI and empty-baseline calibration,
+  // but no longer what classification itself is based on -- see
+  // classifyCell).
   function sampleGrid(cv, warpedMat) {
     const hsv = new cv.Mat();
     cv.cvtColor(warpedMat, hsv, cv.COLOR_RGBA2RGB);
     cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
 
+    // Per-pixel color masks on the warped image, so each cell can be
+    // classified by how much of its sample region actually matches a
+    // color -- the same reliable per-pixel test the mask debug previews
+    // use -- instead of by the region's mean HSV.
+    const redMask = computeRedMask(cv, hsv);
+    const greenMask = computeRangeMask(
+      cv, hsv, settings.greenHueMin, settings.greenHueMax, settings.greenSatMin, settings.greenValMin
+    );
+
     const grid = [];
     const colors = [];
+    const fractions = [];
     const sampleHalfW = Math.floor(CELL_W * 0.28);
     const sampleHalfH = Math.floor(CELL_H * 0.28);
 
     for (let r = 0; r < ROWS; r++) {
       const gridRow = [];
       const colorRow = [];
+      const fractionRow = [];
       for (let c = 0; c < COLS; c++) {
         const cx = Math.round(c * CELL_W + CELL_W / 2);
         const cy = Math.round(r * CELL_H + CELL_H / 2);
@@ -550,20 +585,34 @@ const Vision = (() => {
         const w = Math.min(WARP_W - x0, sampleHalfW * 2);
         const h = Math.min(WARP_H - y0, sampleHalfH * 2);
         const rect = new cv.Rect(x0, y0, w, h);
+
         const roi = hsv.roi(rect);
         const mean = cv.mean(roi);
         roi.delete();
 
+        const area = w * h;
+        const redRoi = redMask.roi(rect);
+        const redFrac = area > 0 ? cv.countNonZero(redRoi) / area : 0;
+        redRoi.delete();
+        const greenRoi = greenMask.roi(rect);
+        const greenFrac = area > 0 ? cv.countNonZero(greenRoi) / area : 0;
+        greenRoi.delete();
+
         const [hh, ss, vv] = mean;
-        gridRow.push(classifyCell(hh, ss, vv, r, c));
+        gridRow.push(classifyCell(hh, ss, vv, r, c, redFrac, greenFrac));
         colorRow.push({ h: hh, s: ss, v: vv });
+        fractionRow.push({ redFrac, greenFrac });
       }
       grid.push(gridRow);
       colors.push(colorRow);
+      fractions.push(fractionRow);
     }
 
+    redMask.delete();
+    greenMask.delete();
     hsv.delete();
     lastColors = colors;
+    lastFractions = fractions;
     return { grid, colors };
   }
 

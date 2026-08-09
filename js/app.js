@@ -770,7 +770,8 @@ dom.warpedCanvas.addEventListener("click", (e) => {
   const rImg = Math.min(BOARD_ROWS - 1, Math.max(0, Math.floor(py / Vision.CELL_H)));
   const info = Vision.debugCell(rImg, c);
   const text = info
-    ? `Row ${rImg + 1} (from top), Col ${c + 1} — H:${info.h.toFixed(0)} S:${info.s.toFixed(0)} V:${info.v.toFixed(0)} → classified as ${info.classification}`
+    ? `Row ${rImg + 1} (from top), Col ${c + 1} — H:${info.h.toFixed(0)} S:${info.s.toFixed(0)} V:${info.v.toFixed(0)} ` +
+      `redCoverage:${(info.redFrac * 100).toFixed(0)}% greenCoverage:${(info.greenFrac * 100).toFixed(0)}% → classified as ${info.classification}`
     : "No sample yet at that spot — wait for the board to be detected.";
   dom.hsvReadout.textContent = text;
   console.log("[hsv-inspect] " + text);
