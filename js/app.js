@@ -56,9 +56,6 @@ const dom = {
   turnStatus: el("turnStatus"),
   boardGrid: el("boardGrid"),
   arrowRow: el("arrowRow"),
-  resetBtn: el("resetBtn"),
-  recomputeBtn: el("recomputeBtn"),
-  swapTurnBtn: el("swapTurnBtn"),
   suggestionText: el("suggestionText"),
   evalBar: el("evalBar"),
   captureCanvas: el("captureCanvas"),
@@ -79,7 +76,6 @@ const dom = {
 // committedBoard[row][col], row 0 = bottom (gravity), 0/1/2.
 let committedBoard = makeEmptyBoard();
 let stabilityBuffer = makeEmptyBuffer(); // per-cell {value, count} in image space (row 0 = top)
-let turnOverride = null; // 1, 2, or null (auto from parity)
 let lastSolvedSignature = null;
 let requestCounter = 0;
 
@@ -563,38 +559,15 @@ function ingestGrid(grid) {
 
   if (changed) {
     console.log("[board] committed change:\n" + committedBoard.map((row) => row.join(" ")).join("\n"));
-    turnOverride = null;
     maybeSolve();
   }
 }
 
 // ---- Turn tracking ----------------------------------------------------
-function getFirstPlayer() {
-  const checked = document.querySelector('input[name="firstPlayer"]:checked');
-  return checked ? parseInt(checked.value, 10) : 1;
-}
-
 function getCurrentTurn() {
-  if (turnOverride) return turnOverride;
   const totalMoves = committedBoard.flat().filter((v) => v !== 0).length;
-  const first = getFirstPlayer();
-  const other = first === 1 ? 2 : 1;
-  return totalMoves % 2 === 0 ? first : other;
+  return totalMoves % 2 === 0 ? 1 : 2; // Red always moves first
 }
-
-dom.swapTurnBtn.addEventListener("click", () => {
-  turnOverride = getCurrentTurn() === 1 ? 2 : 1;
-  updateTurnStatus();
-  maybeSolve();
-});
-
-document.querySelectorAll('input[name="firstPlayer"]').forEach((r) =>
-  r.addEventListener("change", () => {
-    turnOverride = null;
-    updateTurnStatus();
-    maybeSolve();
-  })
-);
 
 function updateTurnStatus() {
   const turn = getCurrentTurn();
@@ -621,15 +594,9 @@ function maybeSolve() {
   requestBestMove();
 }
 
-dom.recomputeBtn.addEventListener("click", () => {
-  lastSolvedSignature = null;
-  maybeSolve();
-});
-
 function resetBoardState() {
   committedBoard = makeEmptyBoard();
   stabilityBuffer = makeEmptyBuffer();
-  turnOverride = null;
   lastSolvedSignature = null;
   dom.suggestionText.textContent = "Point the camera at the board to begin.";
   dom.evalBar.style.left = "50%";
@@ -637,8 +604,6 @@ function resetBoardState() {
   renderBoard();
   updateTurnStatus();
 }
-
-dom.resetBtn.addEventListener("click", resetBoardState);
 
 // ---- Board diagram rendering & manual correction -----------------------
 function renderBoard() {
@@ -670,7 +635,6 @@ function onCellClick(col, row) {
   } else {
     return; // ignore clicks that would create a floating piece
   }
-  turnOverride = null;
   renderBoard();
   maybeSolve();
 }

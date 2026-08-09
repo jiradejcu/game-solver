@@ -157,18 +157,6 @@ select {
 .cell.green { background: radial-gradient(circle at 35% 30%, #7be495, var(--green)); border-color: #1c7a37; }
 .cell.highlight-col { box-shadow: 0 0 0 3px var(--accent); }
 
-.turn-controls {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 14px;
-  color: var(--text-dim);
-  font-size: 0.9rem;
-}
-
-.actions { display: flex; gap: 10px; margin-top: 14px; }
-.actions button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
-
 .suggestion {
   margin-top: 18px;
   padding: 14px;
