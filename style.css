@@ -115,8 +115,8 @@ select {
 }
 .debug-grid label { display: flex; flex-direction: column; gap: 2px; }
 .debug-toggles { display: flex; gap: 14px; margin-top: 10px; flex-wrap: wrap; }
-.debug-previews { display: flex; gap: 10px; margin-top: 10px; }
-.debug-previews canvas { width: 100%; max-width: 200px; border: 1px solid var(--border); border-radius: 4px; }
+.debug-previews { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px; }
+.debug-previews canvas { width: 100%; border: 1px solid var(--border); border-radius: 4px; }
 .hidden { display: none !important; }
 
 .board-panel h2 { margin-top: 0; }

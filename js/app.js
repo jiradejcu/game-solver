@@ -455,25 +455,46 @@ function drawOverlay(result, houghDebug) {
 // for visual calibration checking (do detected shapes land where the real
 // frame/holes actually are?). No picking or fitting happens on this data
 // anymore; see collectHoughDebug in vision.js.
+function segLength(s) {
+  return Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+}
+
+function strokeSeg(ctx, s) {
+  ctx.beginPath();
+  ctx.moveTo(s.x1, s.y1);
+  ctx.lineTo(s.x2, s.y2);
+  ctx.stroke();
+}
+
 function drawHoughDebug(ctx, hd) {
   if (!hd) return;
 
+  const horizontals = hd.horizontals || [];
+  const verticals = hd.verticals || [];
+
+  // The longest candidate in each direction, purely as a visual reference --
+  // lines no longer feed into actual corner-fitting (circles do, see
+  // vision.js's cornersFromCircleGrid), so this isn't "the selected" line in
+  // any functional sense, just the most visually prominent one.
+  const longestH = horizontals.reduce((a, b) => (!a || segLength(b) > segLength(a) ? b : a), null);
+  const longestV = verticals.reduce((a, b) => (!a || segLength(b) > segLength(a) ? b : a), null);
+
   ctx.lineWidth = 1;
   ctx.strokeStyle = "rgba(255, 235, 59, 0.7)"; // all raw horizontal line candidates
-  (hd.horizontals || []).forEach((s) => {
-    ctx.beginPath();
-    ctx.moveTo(s.x1, s.y1);
-    ctx.lineTo(s.x2, s.y2);
-    ctx.stroke();
-  });
+  horizontals.forEach((s) => { if (s !== longestH) strokeSeg(ctx, s); });
 
   ctx.strokeStyle = "rgba(0, 229, 255, 0.7)"; // all raw vertical line candidates
-  (hd.verticals || []).forEach((s) => {
-    ctx.beginPath();
-    ctx.moveTo(s.x1, s.y1);
-    ctx.lineTo(s.x2, s.y2);
-    ctx.stroke();
-  });
+  verticals.forEach((s) => { if (s !== longestV) strokeSeg(ctx, s); });
+
+  ctx.lineWidth = 4;
+  if (longestH) {
+    ctx.strokeStyle = "#ffeb3b";
+    strokeSeg(ctx, longestH);
+  }
+  if (longestV) {
+    ctx.strokeStyle = "#00e5ff";
+    strokeSeg(ctx, longestV);
+  }
 
   ctx.lineWidth = 1;
   ctx.strokeStyle = "rgba(255, 0, 229, 0.8)"; // every raw Hough circle (hole candidate)
