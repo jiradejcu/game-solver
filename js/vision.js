@@ -37,7 +37,52 @@ const Vision = (() => {
     minAreaFraction: 0.03, // discard candidate board contour smaller than this fraction of the frame
     flipH: false,
     flipV: false,
+
+    // Max color distance (see colorDelta) from the calibrated empty-slot
+    // baseline for a cell to still count as empty. Lets an empty-board
+    // calibration override hue-range misreads caused by lighting/white-balance
+    // color casts (e.g. white/cream holes reading as green).
+    emptyMaxDist: 45,
   };
+
+  // Per-cell {h,s,v} sampled the last time an empty board was calibrated
+  // (see calibrateEmpty), or null if never calibrated. ROWS x COLS.
+  let emptyReference = null;
+  // Per-cell {h,s,v} from the most recent sampleGrid call, used as the
+  // source frame for calibrateEmpty.
+  let lastColors = null;
+
+  function colorDelta(a, b) {
+    const dh = Math.min(Math.abs(a.h - b.h), 180 - Math.abs(a.h - b.h));
+    const ds = Math.abs(a.s - b.s);
+    const dv = Math.abs(a.v - b.v);
+    return dh * 1.5 + ds * 0.6 + dv * 0.3;
+  }
+
+  // Captures the most recently sampled frame's colors as the empty-slot
+  // baseline. Call this while the physical board is empty. Returns false if
+  // no frame has been sampled yet.
+  function calibrateEmpty() {
+    if (!lastColors) return false;
+    emptyReference = lastColors.map((row) => row.map((c) => ({ ...c })));
+    return true;
+  }
+
+  function clearEmptyCalibration() {
+    emptyReference = null;
+  }
+
+  function hasEmptyCalibration() {
+    return !!emptyReference;
+  }
+
+  // Debug helper: returns the last-sampled {h,s,v,classification} for one
+  // grid cell (image space: row 0 = top), or null if no frame sampled yet.
+  function debugCell(r, c) {
+    if (!lastColors || !lastColors[r] || !lastColors[r][c]) return null;
+    const { h, s, v } = lastColors[r][c];
+    return { h, s, v, classification: classifyCell(h, s, v, r, c) };
+  }
 
   function orderCorners(pts) {
     // pts: [{x,y} x4] -> returns [TL, TR, BR, BL]
@@ -174,6 +219,17 @@ const Vision = (() => {
     return "empty";
   }
 
+  // Classifies one sampled cell, preferring the calibrated empty baseline
+  // (if any) over hue-range matching so a lighting color cast that pushes
+  // white/cream holes into the red/green hue range doesn't misread them.
+  function classifyCell(h, s, v, r, c) {
+    if (emptyReference) {
+      const ref = emptyReference[r][c];
+      if (colorDelta({ h, s, v }, ref) <= settings.emptyMaxDist) return "empty";
+    }
+    return classifyHSV(h, s, v);
+  }
+
   // Samples the 42 slot centers of a warped board image.
   // Returns { grid, colors } where grid[row][col] (row 0 = top of image) is
   // 'empty' | 'red' | 'green', and colors[row][col] is the averaged {h,s,v}.
@@ -202,7 +258,7 @@ const Vision = (() => {
         roi.delete();
 
         const [hh, ss, vv] = mean;
-        gridRow.push(classifyHSV(hh, ss, vv));
+        gridRow.push(classifyCell(hh, ss, vv, r, c));
         colorRow.push({ h: hh, s: ss, v: vv });
       }
       grid.push(gridRow);
@@ -210,6 +266,7 @@ const Vision = (() => {
     }
 
     hsv.delete();
+    lastColors = colors;
     return { grid, colors };
   }
 
@@ -236,14 +293,30 @@ const Vision = (() => {
     }
 
     const warped = warpBoard(cv, srcMat, orderedCorners);
-    const { grid } = sampleGrid(cv, warped);
+    const { grid, colors } = sampleGrid(cv, warped);
 
     if (opts.warpedCanvas) {
       cv.imshow(opts.warpedCanvas, warped);
     }
     warped.delete();
 
-    return { found: true, corners, grid };
+    return { found: true, corners, grid, colors };
+  }
+
+  // Renders a grid + its raw {h,s,v} samples as a compact multi-line string,
+  // one row per physical board row, e.g. "r0: e(12,20,180) r(8,64,48) …" —
+  // meant for console/devlog output when debugging misclassifications.
+  function formatGridDebug(grid, colors) {
+    const lines = [];
+    for (let r = 0; r < grid.length; r++) {
+      const parts = [];
+      for (let c = 0; c < grid[r].length; c++) {
+        const { h, s, v } = colors[r][c];
+        parts.push(`${grid[r][c][0]}(${h.toFixed(0)},${s.toFixed(0)},${v.toFixed(0)})`);
+      }
+      lines.push(`r${r}: ${parts.join(" ")}`);
+    }
+    return lines.join("\n");
   }
 
   return {
@@ -256,5 +329,10 @@ const Vision = (() => {
     sampleGrid,
     classifyHSV,
     processFrame,
+    calibrateEmpty,
+    clearEmptyCalibration,
+    hasEmptyCalibration,
+    debugCell,
+    formatGridDebug,
   };
 })();

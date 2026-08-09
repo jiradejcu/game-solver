@@ -14,6 +14,8 @@ const dom = {
   startBtn: el("startBtn"),
   cameraSelect: el("cameraSelect"),
   pauseChk: el("pauseChk"),
+  calibrateEmptyBtn: el("calibrateEmptyBtn"),
+  calibrateStatus: el("calibrateStatus"),
   detectStatus: el("detectStatus"),
   turnStatus: el("turnStatus"),
   boardGrid: el("boardGrid"),
@@ -26,6 +28,7 @@ const dom = {
   captureCanvas: el("captureCanvas"),
   maskCanvas: el("maskCanvas"),
   warpedCanvas: el("warpedCanvas"),
+  hsvReadout: el("hsvReadout"),
   showDebugChk: el("showDebugChk"),
   debugPreviews: el("debugPreviews"),
   flipHChk: el("flipHChk"),
@@ -100,7 +103,7 @@ function requestBestMove() {
 async function populateCameraList() {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
-    const cams = devices.filter((d) => d.kind === "videoinput");
+    const cams = devices.filter((d) => d.kind === "videoinput").reverse();
     dom.cameraSelect.innerHTML = "";
     cams.forEach((c, i) => {
       const opt = document.createElement("option");
@@ -192,12 +195,28 @@ function detectTick() {
 
   drawOverlay(result.found ? result.corners : null);
   updateDetectStatus(result.found);
+  logDetection(result);
 
   if (result.found && result.grid) {
     ingestGrid(result.grid);
   }
 
   renderBoard();
+}
+
+let lastFoundLogged = null;
+
+// Mirrors per-tick detection detail to console -> devlog -> dev-console.log
+// so misclassifications can be diagnosed from the log instead of only via
+// the live HSV-inspector click UI.
+function logDetection(result) {
+  if (result.found !== lastFoundLogged) {
+    lastFoundLogged = result.found;
+    console.log(`[vision] board ${result.found ? "found" : "lost"}`);
+  }
+  if (result.found && result.grid && result.colors) {
+    console.debug("[vision] frame\n" + Vision.formatGridDebug(result.grid, result.colors));
+  }
 }
 
 function drawOverlay(corners) {
@@ -271,6 +290,7 @@ function ingestGrid(grid) {
   }
 
   if (changed) {
+    console.log("[board] committed change:\n" + committedBoard.map((row) => row.join(" ")).join("\n"));
     turnOverride = null;
     maybeSolve();
   }
@@ -453,10 +473,46 @@ function bindSetting(inputId, key, isFloat = false) {
   ["s_greenValMin", "greenValMin"],
 ].forEach(([id, key]) => bindSetting(id, key));
 
-dom.flipHChk.addEventListener("change", () => (Vision.settings.flipH = dom.flipHChk.checked));
-dom.flipVChk.addEventListener("change", () => (Vision.settings.flipV = dom.flipVChk.checked));
+function invalidateEmptyCalibration(reason) {
+  if (!Vision.hasEmptyCalibration()) return;
+  Vision.clearEmptyCalibration();
+  dom.calibrateStatus.textContent = `Calibration cleared (${reason}) — recalibrate with an empty board.`;
+}
+
+dom.flipHChk.addEventListener("change", () => {
+  Vision.settings.flipH = dom.flipHChk.checked;
+  invalidateEmptyCalibration("orientation changed");
+});
+dom.flipVChk.addEventListener("change", () => {
+  Vision.settings.flipV = dom.flipVChk.checked;
+  invalidateEmptyCalibration("orientation changed");
+});
 dom.showDebugChk.addEventListener("change", () => {
   dom.debugPreviews.classList.toggle("hidden", !dom.showDebugChk.checked);
+});
+
+dom.warpedCanvas.addEventListener("click", (e) => {
+  const rect = dom.warpedCanvas.getBoundingClientRect();
+  const scaleX = dom.warpedCanvas.width / rect.width;
+  const scaleY = dom.warpedCanvas.height / rect.height;
+  const px = (e.clientX - rect.left) * scaleX;
+  const py = (e.clientY - rect.top) * scaleY;
+  const c = Math.min(BOARD_COLS - 1, Math.max(0, Math.floor(px / Vision.CELL_PX)));
+  const rImg = Math.min(BOARD_ROWS - 1, Math.max(0, Math.floor(py / Vision.CELL_PX)));
+  const info = Vision.debugCell(rImg, c);
+  const text = info
+    ? `Row ${rImg + 1} (from top), Col ${c + 1} — H:${info.h.toFixed(0)} S:${info.s.toFixed(0)} V:${info.v.toFixed(0)} → classified as ${info.classification}`
+    : "No sample yet at that spot — wait for the board to be detected.";
+  dom.hsvReadout.textContent = text;
+  console.log("[hsv-inspect] " + text);
+});
+
+dom.calibrateEmptyBtn.addEventListener("click", () => {
+  const ok = Vision.calibrateEmpty();
+  dom.calibrateStatus.textContent = ok
+    ? "Calibrated — empty holes in this lighting are now the baseline for detecting pieces."
+    : "No frame captured yet — start the camera and point it at the board first.";
+  console.log(`[calibrate] empty-board calibration ${ok ? "captured" : "failed (no frame yet)"}`);
 });
 
 // ---- Wiring -------------------------------------------------------------

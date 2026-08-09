@@ -26,6 +26,11 @@
       <label class="chk"><input type="checkbox" id="pauseChk" /> Pause detection</label>
     </div>
 
+    <div class="camera-controls">
+      <button id="calibrateEmptyBtn" class="secondary">Calibrate empty board</button>
+    </div>
+    <p id="calibrateStatus" class="calibrate-hint">Empty the board, then click Calibrate so lighting/color-cast doesn't get misread as a piece.</p>
+
     <div class="board-status">
       <span id="detectStatus" class="badge badge-off">No board detected</span>
       <span id="turnStatus" class="badge">Turn: —</span>
@@ -54,8 +59,9 @@
       </div>
       <div id="debugPreviews" class="debug-previews hidden">
         <div><p>Blue mask</p><canvas id="maskCanvas"></canvas></div>
-        <div><p>Warped board</p><canvas id="warpedCanvas"></canvas></div>
+        <div><p>Warped board</p><canvas id="warpedCanvas"></canvas><p class="calibrate-hint">Click a cell above to inspect its H/S/V.</p></div>
       </div>
+      <p id="hsvReadout" class="calibrate-hint"></p>
     </details>
   </section>
 
@@ -88,6 +94,7 @@
 
 <canvas id="captureCanvas" class="hidden"></canvas>
 
+<script src="js/devlog.js"></script>
 <script>
   // Surface any uncaught error directly on the page so problems are visible
   // without opening devtools (this line runs before anything else, so it

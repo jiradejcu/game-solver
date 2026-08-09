@@ -93,6 +93,8 @@ select {
 
 .chk { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 0.9rem; }
 
+.calibrate-hint { color: var(--text-dim); font-size: 0.8rem; margin: 6px 0 0; }
+
 .board-status { display: flex; gap: 10px; margin-top: 12px; }
 .badge {
   padding: 4px 10px;
